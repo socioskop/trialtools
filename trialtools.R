@@ -1,11 +1,10 @@
-
-### load libraries
+# load libraries
 library(foreach)
 library(data.table)
 library(magrittr)
 library(lubridate)
 
-### raw data pull
+# raw data pull
 grab.it <- function(path, reg, years, pop, vars=NULL, s.id=NULL, show.vars=F){
   # reformat args
   if (substr(path, nchar(path), nchar(path))!="/"){path <- paste0(path, "/")}
@@ -29,15 +28,7 @@ grab.it <- function(path, reg, years, pop, vars=NULL, s.id=NULL, show.vars=F){
   return(f)
 }
 
-
-### formatting: fixed string format with padding for numericals
-form.it <- function(x, digits=3, perc=FALSE){
-  x <- format(round(x, digits), nsmall=digits)
-  if (perc==T){x <- paste0(x, "%")}
-  return(x)
-}
-
-### reduce: takes last observation before time
+# reduce: takes last observation before time
 last.obs <- function(data, id, time) {
   d <- data.table::data.table(data[!is.na(data[[id]]),])
   d <- d[order(get(id), get(time)),]
@@ -216,14 +207,23 @@ twoway.num <- function(data, x, group, weight=NULL, digit.m=1, digit.sd=1, inf=F
   return(tab)
 }
 
-### formatting
+# formatting
+# checking format to use in apply functionality
 is.ok <- function(x) {
   (sum(!is.na(x))==(sum(!is.na(as.numeric(as.character(x))))) & length(x[grepl(paste0(letters, collapse="|"), x)])==0)
 }
 
-form.it <- function(x, digits=3){
+# form.it: fixed string format with padding for numericals
+form.it <- function(x, digits=3, perc=FALSE){
   x <- format(round(x, digits), nsmall=digits)
+  if (perc==T){x <- paste0(x, "%")}
+  return(x)
 }
+
+# simpler format, ignore '%' options
+#form.it <- function(x, digits=3){
+#  x <- format(round(x, digits), nsmall=digits)
+#}
 
 # Survival analysis and plotting
 ggsplot <- function(model, titles, table=F, labels=c("Control", "Treatment")){
