@@ -65,8 +65,9 @@ reduce.forward <- function(data, id="pnr", index="index", time="date", vars, int
   return(d)
 }
 
-### Twoways: generates twoway statistics for categorical and numerical variables (+ n-count descriptives)
-tt.tabulate <- function(data, xs, treat, weight=NULL, num=NA, cat=NA, bin=NA, num.test="auto", na.is="collapsed", no_wgt=NULL){
+# Twoways: generates twoway statistics for categorical and numerical variables (+ n-count descriptives)
+# accepts weighted data (propensities or integer weights)
+tt.tabulate <- function(data, xs, treat, weight=NULL, num=NA, cat=NA, bin=NA, num.test="auto", na.is="collapsed", na.count=F, no_wgt=NULL){
   t <- data.frame()
   for (x in xs){
     ## verbose
@@ -90,20 +91,34 @@ tt.tabulate <- function(data, xs, treat, weight=NULL, num=NA, cat=NA, bin=NA, nu
       }
     }
     
-    #if (x %in% ttests){test.type <- "ttest"} else {test.type <- "wilcox"}
-    
     ## adding row to summary table depending on variable type
     wgt <- switch((x %in% no_wgt | is.null(weight))+1, weight, NULL)
     if (x %in% c("n", "n_wgt")){try(t <- dplyr::bind_rows(t, twoway.n  (data=data, x, treat, weight=wgt)))} 
     if (x %in% num){try(t <- dplyr::bind_rows(t, twoway.num(data=data, x, treat, weight=wgt, digit.m = 2, digit.sd = 2, test = num.test)))} 
     if (x %in% cat){try(t <- dplyr::bind_rows(t, twoway.chi(data=data, x, treat, weight=wgt)))} 
     if (x %in% bin){try(t <- dplyr::bind_rows(t, twoway.chi(data=data, x, treat, weight=wgt, bin=T)))}
+    
+    ## add na column
+    if (na.count==T){
+      groups <- unique(na.omit(data[[treat]]))
+      groups <- groups[order(groups)]
+      nas <- as.character()
+      for (g in groups){
+        nas <- c(nas, sum(is.na(data[[x]][data[[treat]]==g & !is.na(data[[treat]])])))
+      }
+      t$nas[nrow(t)] <- paste0(nas, collapse="/")
+    }
+  }
+  if (na.count==T){
+    t <- cbind(t[,colnames(t)!="nas"], t$nas)
+    colnames(t)[colnames(t) %in% c("nas", "t$nas")] <- paste0("NA's for ", paste0(groups, collapse="/"))
   }
   t <- t%>% dplyr::mutate_if(is.ok, function(x) as.numeric(as.character(x)))
   t <- t%>% dplyr::mutate_if(is.factor, function(x) as.character(x))
   return(t)
 }
 
+# summarizes n by group
 twoway.n <- function(data, x, group, weight=NULL){
   if (is.null(weight)){data$weight <- 1} else {data$weight <- data[[weight]]; data[[weight]] <- NULL}
   
@@ -120,23 +135,33 @@ twoway.n <- function(data, x, group, weight=NULL){
   return(tab)
 }
 
+# summarizes and tests twoway-tables
 twoway.chi <- function(data, x, group, weight=NULL, bin=F){
+  
+  # 1-weight added or actual weight renamed
   if (is.null(weight)){data$weight <- 1} else {data$weight <- data[[weight]]; data[[weight]] <- NULL}
   
+  # cut data
   data <- data[!is.na(data[[group]]),c(x, group, "weight")]
-  if (bin==T) {data[[x]] <- as.numeric(data[[x]]>=1)}
-  #tab <- table(data[[x]], data[[group]], useNA="ifany")
+  if (bin==T) {data[[x]] <- as.numeric(data[[x]]>=1)} # optional conversion to binary
+  
+  # generate tables, handle missing
   show.na <- (sum(is.na(data[[x]]))>0)
-  tab <- round(questionr::wtd.table(data[[x]], data[[group]], weights = data$weight, na.show = show.na))
+  tab   <- round(questionr::wtd.table(data[[x]], data[[group]], weights = data$weight, na.show = show.na))
   tab.noround <- questionr::wtd.table(data[[x]], data[[group]], weights = data$weight, na.show = F)
   
-  tab         <- tab[rowSums(tab)>0,]
-  tab.noround <- tab.noround[rowSums(tab.noround)>0,]
+  tab         <- tab[rowSums(tab)>0,colSums(tab)>0]
+  tab.noround <- tab.noround[rowSums(tab.noround)>0,colSums(tab)>0]
   
   groups <- colnames(tab)
   if (nrow(tab)<2){warning("two few levels")}
-  data[[x]][is.na(data[[x]])] <- "N/A"
+  
+  data[[x]][is.na(data[[x]])] <- "N/A"                # adding NA as hardcoded level
+  
+  # test statistics chi^2
   p <- form.it(chisq.test(tab.noround[rowSums(tab.noround)>0,])$p.value, 3)
+  
+  # bind together table and formatting
   levels <- rownames(tab)
   if (is.na(levels[length(levels)]) & sum(is.na(levels))==1){levels[length(levels)] <- "N/A"}
   tab <- matrix(rbind(tab, form.it(prop.table(tab, 2)*100, 1)), nrow=nrow(tab)) #[,c(seq(1, ncol(tab)*2, 2), seq(2, ncol(tab)*2, 2))]
@@ -144,12 +169,15 @@ twoway.chi <- function(data, x, group, weight=NULL, bin=F){
   if (nrow(tab)>=2 & bin==F){varname   <- c(x, rep(NA, nrow(tab)-1))} else {varname <- rep(x, nrow(tab))}
   tab <- as.data.frame(cbind(varname, levels, tab, filling))
   colnames(tab) <- c("var", "level", rbind(paste0(groups, ".mean/n"), paste0(groups, ".sd/%")), "p")
-  if (bin==T){tab <- tab[nrow(tab),]}
-  tab[nrow(tab), "test"] <- "chi^2"
+  
+  if (bin==T){tab <- tab[nrow(tab),]}                 # optional keep only last row for binary indicators 
+  tab[nrow(tab), "test"] <- "chi^2"                   # labels
+  
   return(tab)
 }
 
-twoway.num <- function(data, x, group, weight=NULL, digit.m=1, digit.sd=1, inf=FALSE, test=NULL, shapiro.p=.01){
+# summarizes numerical variables for treatment factor
+twoway.num <- function(data, x, group, weight=NULL, digit.m=1, digit.sd=1, inf=FALSE, test=NULL, shapiro.p=.0001){
   if (is.null(weight)){data$weight <- 1; weight <- "weight"} else {data$weight <- data[[weight]]; data[[weight]] <- NULL; weight <- "weight"}
   
   data <- data[!is.na(data[[group]]),]
@@ -188,15 +216,20 @@ twoway.num <- function(data, x, group, weight=NULL, digit.m=1, digit.sd=1, inf=F
   return(tab)
 }
 
+### formatting
 is.ok <- function(x) {
   (sum(!is.na(x))==(sum(!is.na(as.numeric(as.character(x))))) & length(x[grepl(paste0(letters, collapse="|"), x)])==0)
 }
 
-### Survival analysis and plotting
-ggsplot <- function(model, titles, table=F){
+form.it <- function(x, digits=3){
+  x <- format(round(x, digits), nsmall=digits)
+}
+
+# Survival analysis and plotting
+ggsplot <- function(model, titles, table=F, labels=c("Control", "Treatment")){
   p <- survminer::ggsurvplot(
     fit=model, conf.int=T, palette=c(pals::okabe()[2:7]),
-    title=titles, legend=c(.1, .25), legend.labs=c("Controls", "MeHAS"),
+    title=titles, legend=c(.1, .25), legend.labs=c(labels[1], labels[2]),
     risk.table=table, break.time.by=25, #palette=rep("black", 2),
     size=.66, linetype=c("solid", "dashed"), censor=F,
     xlab="Days", ylab="Proportion unemployed", dots=T, xlim=c(0, 371))
